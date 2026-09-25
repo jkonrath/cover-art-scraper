@@ -1,0 +1,5 @@
+.DS_Store
+
+# Output from runs
+results*.csv
+covers*/
