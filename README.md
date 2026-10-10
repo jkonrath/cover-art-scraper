@@ -2,7 +2,9 @@
 
 Finds full-resolution album cover art on Bandcamp for a list of albums in a CSV file. It can also download the covers and check whether each one is at least 1600×1600 pixels.
 
-Bandcamp is a good source for indie releases because artists upload their original art files. Albums the script can't find, or can't find in a large enough size, are listed at the end so you can look them up by hand, for example on [covers.musichoarders.xyz](https://covers.musichoarders.xyz).
+It searches Bandcamp by default. Add `--source=itunes` to search Apple's iTunes Store instead, using the same input file.
+
+Bandcamp is a good source for indie releases because artists upload their original art files. iTunes is better for major-label and older releases that aren't on Bandcamp. Albums the script can't find, or can't find in a large enough size, are listed at the end so you can look them up by hand, for example on [covers.musichoarders.xyz](https://covers.musichoarders.xyz).
 
 ## Requirements
 
@@ -38,10 +40,11 @@ Each run writes a new results file, such as `results-20260925-143012.csv`. With 
 
 | Option | What it does |
 |---|---|
+| `--source <name>` | Where to search: `bandcamp` (the default) or `itunes`. `--source=itunes` also works. |
 | `--download` | Download the cover for each MATCH row and check its size |
 | `--include-check` | With `--download`, also download covers for CHECK rows |
 | `--skip-bad-rows` | Search the good rows even if some rows have problems (see [Input checks](#input-checks)) |
-| `--delay <ms>` | Wait this many milliseconds between searches. The default is `1000`. |
+| `--delay <ms>` | Wait this many milliseconds between searches. The default is `1000` for Bandcamp and `3000` for iTunes. |
 | `--out <file>` | Results file name. The default is `results-yyyymmdd-hhmmss.csv`. |
 | `--covers <dir>` | Download folder. The default is `covers-yyyymmdd-hhmmss`. |
 | `--help` | Show usage |
@@ -96,8 +99,8 @@ The results file has these columns:
 |---|---|
 | `artist`, `album` | Your input |
 | `status` | See the statuses below |
-| `matched_artist`, `matched_album` | What Bandcamp found |
-| `page_url` | The album's Bandcamp page |
+| `matched_artist`, `matched_album` | What Bandcamp or iTunes found |
+| `page_url` | The album's Bandcamp or Apple Music page |
 | `cover_url` | The full-resolution cover image |
 | `width`, `height` | Cover size in pixels (only with `--download`) |
 
@@ -146,6 +149,8 @@ The best-scoring result is used:
 - **2 or 3:** CHECK
 - **less than 2:** NO MATCH
 
+Album titles on iTunes often carry extras such as `(Deluxe Edition)`, `[Remastered]` or `- EP`. Before comparing album titles, the script also tries both titles with those tags removed, so `Capacity` and `Capacity (Deluxe Edition)` count as identical.
+
 ### Cover URLs
 
 Bandcamp stores the original uploaded image at:
@@ -155,6 +160,14 @@ https://f4.bcbits.com/img/a<art_id>_0.jpg
 ```
 
 `<art_id>` is padded with zeros to 10 digits. The `a` in front is required. The thumbnail URL in Bandcamp's search results leaves it out, so changing only the thumbnail's size number returns a "not found" error.
+
+### iTunes
+
+With `--source=itunes`, the script uses Apple's free [iTunes Search API](https://performance-partners.apple.com/search-api), which needs no account or key. It searches the US store for albums.
+
+Each result links to a 100×100 thumbnail ending in `100x100bb.jpg`. The script changes that to `3000x3000bb.jpg`, which returns the largest version Apple has, up to 3000×3000. Apple doesn't document this, so it could stop working.
+
+Apple gives the rate limit as about 20 searches a minute, so the default delay for iTunes is 3 seconds.
 
 ## Input checks
 
@@ -198,6 +211,7 @@ Error: Found 1 problem row in "albums.csv" (listed above). Nothing was searched.
 
 - An option is missing its value.
 - `--delay` isn't a number.
+- `--source` isn't `bandcamp` or `itunes`.
 - The option isn't recognized.
 - Two input files were given. This usually means a file name has spaces and needs quotes around it.
 - The folder for the results file doesn't exist, or can't be written to. This is checked before searching, so a long run can't fail at the very end.
@@ -215,6 +229,7 @@ Error: Found 1 problem row in "albums.csv" (listed above). Nothing was searched.
 
 - **Unofficial search.** Bandcamp has no public API. The script uses the search that runs behind Bandcamp's own search box, which could change or stop working without notice.
 - **Bot checks.** If Bandcamp responds with a bot check instead of search results, the album is marked ERROR and the script moves on. If you see many ERRORs, wait a while and try a longer `--delay`.
-- **Bandcamp only.** Albums that aren't on Bandcamp come back as NO MATCH. Some major-label and older releases aren't there.
+- **One source per run.** Albums that aren't on the chosen source come back as NO MATCH. Some major-label and older releases aren't on Bandcamp, and indie releases never sold through iTunes or Apple Music aren't on iTunes. Try the other source for those.
+- **iTunes rate limit.** If Apple returns HTTP 403 or 429, the album is marked ERROR. Wait a while and try a longer `--delay`.
 - **Results are written at the end.** If you stop a run partway through (Ctrl-C), nothing from that run is saved. Split very long lists into smaller files.
 - **Opening results in Excel.** If an artist or album name starts with `=`, `+`, `-` or `@`, Excel may treat it as a formula when you open the results file.
