@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * bandcamp-covers.js — find full-resolution album cover art on Bandcamp.
+ * bandcamp-covers.js — find full-resolution album cover art on Bandcamp (default) or iTunes.
  *
  * Requires Node 18+ (built-in fetch). No dependencies.
  *
@@ -8,9 +8,10 @@
  *   node bandcamp-covers.js albums.csv [options]
  *
  * OPTIONS
+ *   --source <name>   Where to search: bandcamp (default) or itunes. --source=itunes also works.
  *   --download        Save covers for MATCH rows into covers-yyyymmdd-hhmmss/ and check their pixel size
  *   --include-check   With --download, also save covers for CHECK rows
- *   --delay <ms>      Delay between search requests (default 1000)
+ *   --delay <ms>      Delay between search requests (default 1000 for Bandcamp, 3000 for iTunes)
  *   --out <file>      Results file (default results-yyyymmdd-hhmmss.csv, local time)
  *   --covers <dir>    Download folder (default covers-yyyymmdd-hhmmss, same time as results)
  *   --skip-bad-rows   Search the good rows even if some rows have problems
@@ -39,6 +40,12 @@
  *   The original upload is at https://f4.bcbits.com/img/a<art_id, 10 digits>_0.jpg.
  *   The "a" prefix is required. The img field omits it, so changing only its
  *   size suffix returns a 404.
+ *
+ *   iTunes uses Apple's documented Search API (https://itunes.apple.com/search, entity=album).
+ *   Apple gives the rate limit as about 20 calls a minute, hence the 3 s default delay.
+ *   Each result has artworkUrl100 ending in .../100x100bb.jpg. Swapping that for
+ *   3000x3000bb returns the largest version Apple has, up to 3000px. That swap isn't in
+ *   Apple's docs (beets fetchart and others rely on it), so it could stop working.
  */
 
 'use strict';
@@ -47,6 +54,8 @@ const fs = require('fs');
 const path = require('path');
 
 const SEARCH_URL = 'https://bandcamp.com/api/bcsearch_public_api/1/autocomplete_elastic';
+const ITUNES_URL = 'https://itunes.apple.com/search';
+const ITUNES_ART_SIZE = '3000x3000bb';
 const MIN_SIZE = 1600;
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
@@ -58,7 +67,10 @@ function timestamp() {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-const USAGE = 'Usage: node bandcamp-covers.js albums.csv [--download] [--include-check] [--skip-bad-rows] [--delay ms] [--out file] [--covers dir]';
+const SOURCES = ['bandcamp', 'itunes'];
+const DEFAULT_DELAY = { bandcamp: 1000, itunes: 3000 };
+
+const USAGE = 'Usage: node bandcamp-covers.js albums.csv [--source bandcamp|itunes] [--download] [--include-check] [--skip-bad-rows] [--delay ms] [--out file] [--covers dir]';
 
 // Errors the user can fix. main() prints just the message, no stack trace.
 function fail(msg) {
@@ -68,7 +80,7 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  const opts = { csv: null, download: false, includeCheck: false, skipBad: false, delay: 1000, out: null, covers: null };
+  const opts = { csv: null, source: 'bandcamp', download: false, includeCheck: false, skipBad: false, delay: null, out: null, covers: null };
   const value = (i, name, example) => {
     const v = argv[i];
     if (v === undefined || v.startsWith('--')) fail(`${name} needs a value after it, e.g. ${name} ${example}`);
@@ -77,6 +89,11 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--download') opts.download = true;
+    else if (a === '--source' || a.startsWith('--source=')) {
+      const v = a === '--source' ? value(++i, a, 'itunes') : a.slice('--source='.length);
+      if (!SOURCES.includes(v.toLowerCase())) fail(`--source must be one of: ${SOURCES.join(', ')} (got "${v}").`);
+      opts.source = v.toLowerCase();
+    }
     else if (a === '--include-check') opts.includeCheck = true;
     else if (a === '--skip-bad-rows') opts.skipBad = true;
     else if (a === '--delay') {
@@ -92,6 +109,7 @@ function parseArgs(argv) {
     else opts.csv = a;
   }
   if (!opts.csv) fail(`No input file given.\n${USAGE}`);
+  if (opts.delay === null) opts.delay = DEFAULT_DELAY[opts.source];
   if (opts.includeCheck && !opts.download) console.log('Warning: --include-check does nothing without --download.');
   const ts = timestamp();
   if (!opts.out) opts.out = `results-${ts}.csv`;
@@ -337,6 +355,19 @@ function norm(s) {
     .replace(/[^a-z0-9]/g, '');
 }
 
+// Apple often adds edition and format tags to album titles, e.g. "Capacity (Deluxe Edition)",
+// "Lung Bread - EP" or "Teens of Denial [Remastered]". Strips those so the plain title can match.
+function looseTitle(s) {
+  let t = String(s || '');
+  for (let prev; prev !== t;) {
+    prev = t;
+    t = t.replace(/\s*-\s*(EP|Single)\s*$/i, '')
+      .replace(/\s*[([][^()[\]]*(edition|deluxe|remaster|expanded|anniversary|version|bonus|explicit|clean|reissue|mono|stereo)[^()[\]]*[)\]]\s*$/i, '')
+      .trim();
+  }
+  return t;
+}
+
 function similarity(a, b) {
   const x = norm(a), y = norm(b);
   if (!x || !y) return 0;
@@ -374,6 +405,16 @@ async function search(artist, album) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   try { return JSON.parse(text); }
   catch { throw new Error('non-JSON response (likely a bot challenge)'); }
+}
+
+async function searchItunes(artist, album) {
+  const params = new URLSearchParams({ term: `${artist} ${album}`, entity: 'album', limit: '25' });
+  const res = await fetch(`${ITUNES_URL}?${params}`, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
+  const text = await res.text();
+  if (res.status === 403 || res.status === 429) throw new Error(`HTTP ${res.status} (probably rate limited, try a longer --delay)`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  try { return JSON.parse(text); }
+  catch { throw new Error('non-JSON response'); }
 }
 
 async function download(url, file) {
@@ -417,16 +458,35 @@ function safeName(s) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function processRow(artist, album) {
+// Each source searches and returns its album results as { artist, album, page_url, cover_url }.
+const sources = {
+  async bandcamp(artist, album) {
+    const data = await search(artist, album);
+    return ((data && data.auto && data.auto.results) || []).filter(r => r.type === 'a').map(r => ({
+      artist: r.band_name || '', album: r.name || '', page_url: fixUrl(r.item_url_path), cover_url: coverUrl(r),
+    }));
+  },
+  async itunes(artist, album) {
+    const data = await searchItunes(artist, album);
+    return ((data && data.results) || []).filter(r => r.wrapperType === 'collection').map(r => ({
+      artist: r.artistName || '',
+      album: r.collectionName || '',
+      page_url: String(r.collectionViewUrl || '').replace(/\?.*$/, ''),
+      cover_url: String(r.artworkUrl100 || '').replace(/\/\d+x\d+bb\.(jpg|png)$/i, `/${ITUNES_ART_SIZE}.$1`),
+    }));
+  },
+};
+
+async function processRow(source, artist, album) {
   const out = { artist, album, status: 'NO MATCH', matched_artist: '', matched_album: '', page_url: '', cover_url: '', width: '', height: '', note: '' };
-  let data;
-  try { data = await search(artist, album); }
+  let results;
+  try { results = await sources[source](artist, album); }
   catch (e) { out.status = 'ERROR'; out.note = e.message; return out; }
 
-  const results = ((data && data.auto && data.auto.results) || []).filter(r => r.type === 'a');
   let best = null, bestScore = -1;
   for (const r of results) {
-    const score = similarity(album, r.name) + similarity(artist, r.band_name);
+    const titleScore = Math.max(similarity(album, r.album), similarity(looseTitle(album), looseTitle(r.album)));
+    const score = titleScore + similarity(artist, r.artist);
     if (score > bestScore) { best = r; bestScore = score; }
   }
   if (!best || bestScore < 2) {
@@ -434,10 +494,11 @@ async function processRow(artist, album) {
     return out;
   }
   out.status = bestScore >= 4 ? 'MATCH' : 'CHECK';
-  out.matched_artist = best.band_name || '';
-  out.matched_album = best.name || '';
-  out.page_url = fixUrl(best.item_url_path);
-  out.cover_url = coverUrl(best);
+  out.matched_artist = best.artist;
+  out.matched_album = best.album;
+  out.page_url = best.page_url;
+  out.cover_url = best.cover_url;
+  if (!best.cover_url) out.note = 'no cover art listed';
   return out;
 }
 
@@ -459,6 +520,7 @@ async function main() {
   if (problems.length) console.log('');
 
   checkOutput(opts.out);
+  console.log(`Searching ${opts.source === 'itunes' ? 'iTunes' : 'Bandcamp'} for ${albums.length} album${albums.length === 1 ? '' : 's'}, ${opts.delay} ms apart.\n`);
   if (opts.download) {
     try { fs.mkdirSync(opts.covers, { recursive: true }); }
     catch (e) { fail(`Can't create the covers folder "${opts.covers}": ${e.message}`); }
@@ -471,7 +533,7 @@ async function main() {
   for (let n = 0; n < albums.length; n++) {
     const { artist, album, file } = albums[n];
     if (n > 0) await sleep(opts.delay);
-    const r = await processRow(artist, album);
+    const r = await processRow(opts.source, artist, album);
 
     const wanted = r.status === 'MATCH' || (opts.includeCheck && r.status === 'CHECK');
     if (opts.download && wanted && r.cover_url) {
