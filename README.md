@@ -1,6 +1,6 @@
-# bandcamp-covers
+# cover-art-scraper
 
-Finds full-resolution album cover art on Bandcamp for a list of albums in a CSV file. It can also download the covers and check whether each one is at least 1600×1600 pixels.
+Finds full-resolution album cover art on Bandcamp or iTunes for a list of albums in a CSV file. It can also download the covers and check whether each one is at least 1600×1600 pixels.
 
 It searches Bandcamp by default. Add `--source=itunes` to search Apple's iTunes Store instead, using the same input file.
 
@@ -32,6 +32,12 @@ Bandcamp is a good source for indie releases because artists upload their origin
 
    ```bash
    node bandcamp-covers.js albums.csv --download
+   ```
+
+4. If you want to use a different source, specify it with `--source`:
+
+   ```bash
+   node bandcamp-covers.js example-list.csv --source=itunes --download
    ```
 
 Each run writes a new results file, such as `results-20260925-143012.csv`. With `--download`, the covers go into a folder with the same timestamp, such as `covers-20260925-143012/`. Runs never overwrite each other.
